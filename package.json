@@ -1,0 +1,27 @@
+{
+  "name": "ai-chatbot",
+  "version": "1.0.0",
+  "description": "AI chatbot using Langchain and OpenAI",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "test": "test",
+    "start": "node ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "none"
+  },
+  "keywords": [
+    "none"
+  ],
+  "author": "Mattijs Pronk",
+  "license": "ISC",
+  "dependencies": {
+    "@langchain/core": "^0.3.25",
+    "@langchain/google-genai": "^0.1.5",
+    "@langchain/openai": "^0.3.15",
+    "dotenv": "^16.4.7",
+    "langchain": "^0.3.7"
+  }
+}
