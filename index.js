@@ -11,6 +11,8 @@ const app = express();
 const port = process.env.HOST_PORT || 3000;
 app.use(express.json());
 
+const chatMemories = {};
+
 //model aanmaken
 const model = new ChatGoogleGenerativeAI({
   model: "gemini-1.5-pro",
@@ -26,22 +28,29 @@ const chatPrompt = ChatPromptTemplate.fromMessages([
   ["human", "{input}"],
 ]);
 
-//chain aanmaken met memory
-const chain = new ConversationChain({
-  llm: model,
-  memory: new BufferMemory({ returnMessages: true, memoryKey: "history" }),
-  prompt: chatPrompt,
-});
+//chain aanmaken met memory, gebonden aan chatId
+function getConversationChain(chatId) {
+  if (!chatMemories[chatId]) {
+    chatMemories[chatId] = new BufferMemory({ returnMessages: true, memoryKey: "history" });
+  }
+
+  return new ConversationChain({
+    llm: model,
+    memory: chatMemories[chatId],
+    prompt: chatPrompt,
+  });
+}
 
 //endpoint die ik gebruik in postman
 app.post("/chat", async (req, res) => {
-  const { input } = req.body;
+  const { chatId, input  } = req.body;
 
-  if (!input) {
-    return res.status(400).json({ error: "Input is required" });
+  if (!chatId || !input) {
+    return res.status(400).json({ error: "Input and chatId are required" });
   }
 
   try {
+    const chain = getConversationChain(chatId);
     const botResponse = await chain.call({ input });
 
     res.json({ response: botResponse.response });
@@ -56,10 +65,15 @@ app.listen(port, () => {
 });
 
 
-// call naar: http://localhost:3000/chat
-// body met: { "input": "Hi my name is mattijs" }
-// AI output: { "response": "Hi Mattijs.\n" }
 
 // call naar: http://localhost:3000/chat
-// body met: { "input": "What was my name again?" }
+// body met: { "chatId": "1", "input": "Hi my name is mattijs" }
+// AI output: { "response": "Hi Mattijs.\n" }
+// body met: { "chatId": "1", "input": "What was my name again?" }
 // AI output: { "response": "Mattijs.\n" }
+
+// call naar: http://localhost:3000/chat
+// body met: { "chatId": "2", "input": "Hi my name is bert" }
+// AI output: { "response": "Hi Bert.\n" }
+// body met: { "chatId": "2", "input": "What was my name again?" }
+// AI output: { "response": "Bert.\n" }
