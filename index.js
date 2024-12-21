@@ -1,29 +1,65 @@
 import dotenv from "dotenv";
+import express from "express";
+import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
+import { BufferMemory } from "langchain/memory";
+import { ConversationChain } from "langchain/chains";
+import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+
 dotenv.config();
 
-import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { ChatPromptTemplate } from "@langchain/core/prompts";
+const app = express();
+const port = process.env.HOST_PORT || 3000;
+app.use(express.json());
 
-const llm = new ChatGoogleGenerativeAI({
+//model aanmaken
+const model = new ChatGoogleGenerativeAI({
   model: "gemini-1.5-pro",
   temperature: 0,
-  maxRetries: 2,
-  apiKey: process.env.GOOGLE_API_KEY
+  maxRetries: 1,
+  apiKey: process.env.GOOGLE_API_KEY,
 });
 
-// Define the Chat Prompt Template
-const prompt = ChatPromptTemplate.fromMessages([
-  { role: "system", content: "You are a helpful assistant that translates {input_language} to {output_language}." },
-  { role: "user", content: "{input}" },
+//prompt aanmaken
+const chatPrompt = ChatPromptTemplate.fromMessages([
+  ["system", "You are a helpful assistant that keeps answers short."],
+  new MessagesPlaceholder("history"),
+  ["human", "{input}"],
 ]);
 
-const chain = prompt.pipe(llm);
-
-const response1 = await chain.invoke({
-  input_language: "English",
-  output_language: "French",
-  input: "I love programming.",
+//chain aanmaken met memory
+const chain = new ConversationChain({
+  llm: model,
+  memory: new BufferMemory({ returnMessages: true, memoryKey: "history" }),
+  prompt: chatPrompt,
 });
 
-// Log the first translation result
-console.log("Translation:", response1.content);
+//endpoint die ik gebruik in postman
+app.post("/chat", async (req, res) => {
+  const { input } = req.body;
+
+  if (!input) {
+    return res.status(400).json({ error: "Input is required" });
+  }
+
+  try {
+    const botResponse = await chain.call({ input });
+
+    res.json({ response: botResponse.response });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+app.listen(port, () => {
+  console.log(`Server is running on http://localhost:${port}`);
+});
+
+
+// call naar: http://localhost:3000/chat
+// body met: { "input": "Hi my name is mattijs" }
+// AI output: { "response": "Hi Mattijs.\n" }
+
+// call naar: http://localhost:3000/chat
+// body met: { "input": "What was my name again?" }
+// AI output: { "response": "Mattijs.\n" }
