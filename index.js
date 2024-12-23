@@ -1,59 +1,114 @@
+//secrets inladen
 import dotenv from "dotenv";
+dotenv.config();
+
 import express from "express";
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
-import { BufferMemory } from "langchain/memory";
-import { ConversationChain } from "langchain/chains";
-import { ChatPromptTemplate, MessagesPlaceholder } from "@langchain/core/prompts";
+import {
+  ChatPromptTemplate,
+  MessagesPlaceholder,
+} from "@langchain/core/prompts";
+import { createToolCallingAgent, AgentExecutor } from "langchain/agents";
+import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
-dotenv.config();
+//imports voor tools
+import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
+import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
+import { CheerioWebBaseLoader } from "@langchain/community/document_loaders/web/cheerio";
+import { MemoryVectorStore } from "langchain/vectorstores/memory";
+import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
+import { createRetrieverTool } from "langchain/tools/retriever";
 
 const app = express();
 const port = process.env.HOST_PORT || 3000;
 app.use(express.json());
 
-const chatMemories = {};
+// chat geschiedenis map
+const chatHistories = new Map();
+
+const loader = new CheerioWebBaseLoader(
+  "https://js.langchain.com/docs/how_to/#langchain-expression-language-lcel"
+);
+const docs = await loader.load();
+
+const splitter = new RecursiveCharacterTextSplitter({
+  chunkSize: 200,
+  chunkOverlap: 20,
+});
+
+const splitDocs = await splitter.splitDocuments(docs);
+
+const embeddings = new GoogleGenerativeAIEmbeddings();
+
+const vectorStore = await MemoryVectorStore.fromDocuments(
+  splitDocs,
+  embeddings
+);
+
+const retriever = vectorStore.asRetriever({
+  k: 2,
+});
+
+//tools aanmaken
+const searchTool = new TavilySearchResults();
+const retrieverTool = createRetrieverTool(retriever, {
+  name: "lcel_search",
+  description:
+    "Use this tool when searching for information about Lanchain Expression Language (LCEL)",
+});
+const tools = [retrieverTool, searchTool];
 
 //model aanmaken
 const model = new ChatGoogleGenerativeAI({
   model: "gemini-1.5-pro",
-  temperature: 0,
+  temperature: 0.5,
   maxRetries: 1,
-  apiKey: process.env.GOOGLE_API_KEY,
 });
 
 //prompt aanmaken
-const chatPrompt = ChatPromptTemplate.fromMessages([
-  ["system", "You are a helpful assistant that keeps answers short."],
-  new MessagesPlaceholder("history"),
-  ["human", "{input}"],
+const prompt = ChatPromptTemplate.fromMessages([
+  ("system", "You are a helpful assistant that keeps the answers short."),
+  new MessagesPlaceholder("chat_history"),
+  ("human", "{input}"),
+  new MessagesPlaceholder("agent_scratchpad"),
 ]);
 
-//chain aanmaken met memory, gebonden aan chatId
-function getConversationChain(chatId) {
-  if (!chatMemories[chatId]) {
-    chatMemories[chatId] = new BufferMemory({ returnMessages: true, memoryKey: "history" });
-  }
+//agent aanmaken met model, tools en prompt
+const agent = createToolCallingAgent({
+  llm: model,
+  tools,
+  prompt,
+});
 
-  return new ConversationChain({
-    llm: model,
-    memory: chatMemories[chatId],
-    prompt: chatPrompt,
-  });
-}
+//agentExecutor aanmaken
+const agentExecutor = new AgentExecutor({
+  agent,
+  tools,
+});
 
 //endpoint die ik gebruik in postman
 app.post("/chat", async (req, res) => {
-  const { chatId, input  } = req.body;
+  const { chatId, input } = req.body;
 
   if (!chatId || !input) {
     return res.status(400).json({ error: "Input and chatId are required" });
   }
 
-  try {
-    const chain = getConversationChain(chatId);
-    const botResponse = await chain.call({ input });
+  if (!chatHistories.has(chatId)) {
+    chatHistories.set(chatId, []);
+  }
+  const chatHistory = chatHistories.get(chatId);
 
-    res.json({ response: botResponse.response });
+  try {
+    const botResponse = await agentExecutor.invoke({
+      input: input,
+      chat_history: chatHistory,
+    });
+
+    chatHistory.push(new HumanMessage(input));
+    chatHistory.push(new AIMessage(botResponse.output));
+
+    res.json({ response: botResponse.output });
   } catch (error) {
     console.error("Error:", error);
     res.status(500).json({ error: "Something went wrong" });
@@ -63,17 +118,3 @@ app.post("/chat", async (req, res) => {
 app.listen(port, () => {
   console.log(`Server is running on http://localhost:${port}`);
 });
-
-
-
-// call naar: http://localhost:3000/chat
-// body met: { "chatId": "1", "input": "Hi my name is mattijs" }
-// AI output: { "response": "Hi Mattijs.\n" }
-// body met: { "chatId": "1", "input": "What was my name again?" }
-// AI output: { "response": "Mattijs.\n" }
-
-// call naar: http://localhost:3000/chat
-// body met: { "chatId": "2", "input": "Hi my name is bert" }
-// AI output: { "response": "Hi Bert.\n" }
-// body met: { "chatId": "2", "input": "What was my name again?" }
-// AI output: { "response": "Bert.\n" }
