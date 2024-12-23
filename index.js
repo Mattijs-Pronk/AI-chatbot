@@ -3,15 +3,16 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
+
+//imports voor langchain
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
 import {
   ChatPromptTemplate,
   MessagesPlaceholder,
 } from "@langchain/core/prompts";
 import { createToolCallingAgent, AgentExecutor } from "langchain/agents";
-import { HumanMessage, AIMessage } from "@langchain/core/messages";
 
-//imports voor tools
+//tools inladen
 import { TavilySearchResults } from "@langchain/community/tools/tavily_search";
 import { RecursiveCharacterTextSplitter } from "langchain/text_splitter";
 import { CheerioWebBaseLoader } from "@langchain/community/document_loaders/web/cheerio";
@@ -19,12 +20,13 @@ import { MemoryVectorStore } from "langchain/vectorstores/memory";
 import { GoogleGenerativeAIEmbeddings } from "@langchain/google-genai";
 import { createRetrieverTool } from "langchain/tools/retriever";
 
+//imports voor chatgeschiedenis
+import { BufferMemory } from "langchain/memory";
+import { UpstashRedisChatMessageHistory } from "@langchain/community/stores/message/upstash_redis";
+
 const app = express();
 const port = process.env.HOST_PORT || 3000;
 app.use(express.json());
-
-// chat geschiedenis map
-const chatHistories = new Map();
 
 const loader = new CheerioWebBaseLoader(
   "https://js.langchain.com/docs/how_to/#langchain-expression-language-lcel"
@@ -73,6 +75,22 @@ const prompt = ChatPromptTemplate.fromMessages([
   new MessagesPlaceholder("agent_scratchpad"),
 ]);
 
+//chatgeschiedenis ophalen
+const upstashMessageHistory = new UpstashRedisChatMessageHistory({
+  //"mysession" zou in een echte applicatie een unieke identifier zijn voor de openstaande chat
+  sessionId: "mysession",
+  config: {
+    url: process.env.UPSTASH_REDIS_URL,
+    token: process.env.UPSTASH_REST_TOKEN,
+  },
+});
+
+//chatgeschiedenis opslaan
+const memory = new BufferMemory({
+  memoryKey: "chat_history",
+  chatHistory: upstashMessageHistory,
+});
+
 //agent aanmaken met model, tools en prompt
 const agent = createToolCallingAgent({
   llm: model,
@@ -86,6 +104,20 @@ const agentExecutor = new AgentExecutor({
   tools,
 });
 
+//chatgeschiedenis formateren zodat chat_history het kan lezen
+function formatChatHistory(historyString) {
+  const lines = historyString.split('\n');
+  const messages = [];
+  for (let i = 0; i < lines.length; i += 2) {
+    if (lines[i].startsWith('Human:')) {
+      messages.push({ role: 'human', content: lines[i].replace('Human: ', '') });
+    } else if (lines[i].startsWith('AI:')) {
+      messages.push({ role: 'ai', content: lines[i].replace('AI: ', '') });
+    }
+  }
+  return messages;
+}
+
 //endpoint die ik gebruik in postman
 app.post("/chat", async (req, res) => {
   const { chatId, input } = req.body;
@@ -94,19 +126,16 @@ app.post("/chat", async (req, res) => {
     return res.status(400).json({ error: "Input and chatId are required" });
   }
 
-  if (!chatHistories.has(chatId)) {
-    chatHistories.set(chatId, []);
-  }
-  const chatHistory = chatHistories.get(chatId);
-
   try {
+    const chatHistory = await memory.loadMemoryVariables();
+    const formattedHistory = formatChatHistory(chatHistory.chat_history || '');
+
     const botResponse = await agentExecutor.invoke({
       input: input,
-      chat_history: chatHistory,
+      chat_history: formattedHistory
     });
 
-    chatHistory.push(new HumanMessage(input));
-    chatHistory.push(new AIMessage(botResponse.output));
+    await memory.saveContext({ input: input }, { output: botResponse.output });
 
     res.json({ response: botResponse.output });
   } catch (error) {
