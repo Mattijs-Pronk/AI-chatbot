@@ -3,6 +3,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 import express from "express";
+import cors from 'cors';
 
 //imports voor langchain
 import { ChatGoogleGenerativeAI } from "@langchain/google-genai";
@@ -26,7 +27,11 @@ import { UpstashRedisChatMessageHistory } from "@langchain/community/stores/mess
 
 const app = express();
 const port = process.env.HOST_PORT || 3000;
+app.use(cors({
+  origin: 'http://localhost:8080'
+}));
 app.use(express.json());
+
 
 const loader = new CheerioWebBaseLoader(
   "https://js.langchain.com/docs/how_to/#langchain-expression-language-lcel"
@@ -68,6 +73,13 @@ const model = new ChatGoogleGenerativeAI({
 });
 
 //prompt aanmaken
+const promptQandA = ChatPromptTemplate.fromMessages([
+  ("system", "You are a trivia Q&A system. Ask text-based questions. After the user answers, respond with Correct or Incorrect and briefly explain the correct answer on the previous question you send. Keep responses concise."),
+  new MessagesPlaceholder("chat_history"),
+  ("human", "{input}"),
+  new MessagesPlaceholder("agent_scratchpad"),
+]);
+
 const prompt = ChatPromptTemplate.fromMessages([
   ("system", "You are a helpful assistant that keeps the answers short."),
   new MessagesPlaceholder("chat_history"),
@@ -98,21 +110,35 @@ const agent = createToolCallingAgent({
   prompt,
 });
 
+const agentQandA = createToolCallingAgent({
+  llm: model,
+  tools,
+  prompt: promptQandA,
+});
+
 //agentExecutor aanmaken
 const agentExecutor = new AgentExecutor({
   agent,
   tools,
 });
 
+const agentExecutorQandA = new AgentExecutor({
+  agent: agentQandA,
+  tools,
+});
+
 //chatgeschiedenis formateren zodat chat_history het kan lezen
 function formatChatHistory(historyString) {
-  const lines = historyString.split('\n');
+  const lines = historyString.split("\n");
   const messages = [];
   for (let i = 0; i < lines.length; i += 2) {
-    if (lines[i].startsWith('Human:')) {
-      messages.push({ role: 'human', content: lines[i].replace('Human: ', '') });
-    } else if (lines[i].startsWith('AI:')) {
-      messages.push({ role: 'ai', content: lines[i].replace('AI: ', '') });
+    if (lines[i].startsWith("Human:")) {
+      messages.push({
+        role: "human",
+        content: lines[i].replace("Human: ", ""),
+      });
+    } else if (lines[i].startsWith("AI:")) {
+      messages.push({ role: "ai", content: lines[i].replace("AI: ", "") });
     }
   }
   return messages;
@@ -128,11 +154,36 @@ app.post("/chat", async (req, res) => {
 
   try {
     const chatHistory = await memory.loadMemoryVariables();
-    const formattedHistory = formatChatHistory(chatHistory.chat_history || '');
+    const formattedHistory = formatChatHistory(chatHistory.chat_history || "");
 
     const botResponse = await agentExecutor.invoke({
       input: input,
-      chat_history: formattedHistory
+      chat_history: formattedHistory,
+    });
+
+    await memory.saveContext({ input: input }, { output: botResponse.output });
+
+    res.json({ response: botResponse.output });
+  } catch (error) {
+    console.error("Error:", error);
+    res.status(500).json({ error: "Something went wrong" });
+  }
+});
+
+app.post("/chatQandA", async (req, res) => {
+  const { chatId, input } = req.body;
+
+  if (!chatId || !input) {
+    return res.status(400).json({ error: "Input and chatId are required" });
+  }
+
+  try {
+    const chatHistory = await memory.loadMemoryVariables();
+    const formattedHistory = formatChatHistory(chatHistory.chat_history || "");
+
+    const botResponse = await agentExecutorQandA.invoke({
+      input: input,
+      chat_history: formattedHistory,
     });
 
     await memory.saveContext({ input: input }, { output: botResponse.output });
