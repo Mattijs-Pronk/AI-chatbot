@@ -49,7 +49,6 @@ export default defineComponent({
     async handleItemClick(category) {
       console.log(`Category clicked: ${category}`);
       const data = {
-        chatId: "2",
         input: `Give me a question for the category: ${category}`
       };
       const reply = await getChatResponse(data);
@@ -58,7 +57,6 @@ export default defineComponent({
     async sendAnswer() {
       const input = document.getElementById('input').value;
       const data = {
-        chatId: "2",
         input: `${input}, is this correct? If not give me the correct answer`
       };
       const reply = await getChatResponse(data);
